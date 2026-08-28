@@ -1,0 +1,7 @@
+{
+  "id": "ord_1042",
+  "customer": {"name": "Ada Lovelace", "email": "ada@example.com"},
+  "checkout": {"status": "paid", "currency": "USD", "total": "79.00"},
+  "fulfillment": {"status": "fulfilled", "tracking_id": "track_88"},
+  "items": [{"name": "Mechanical keyboard", "quantity": 1, "amount": "79.00"}]
+}
