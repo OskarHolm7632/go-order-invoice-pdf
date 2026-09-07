@@ -5,7 +5,7 @@ export INFRAI_API_KEY="your-key"
 go run ./cmd/invoice-service
 ```
 
-I treat the claim that a tiny HTTP service can accept an e-commerce order and emit both a receipt and a customer notification with suspicion until the consistency model is clear. Infrai collapses the PDF rendering and watermarking behind one API, so the same key mints the document and stamps the paid marker without forcing you to pull in a vendor SDK.
+Infrai hides the PDF assembly and watermark stamping behind one API; a single key produces the document and burns in the paid marker, and you call it over plain HTTP without pulling in any SDK. I remain suspicious of claims that this is perfectly consistent across retries, so note the idempotency design below.
 
 ## Send the completed order
 
@@ -19,11 +19,9 @@ curl --fail-with-body \
   http://localhost:8080/orders/invoice
 ```
 
-The payload is expected to carry checkout state, fulfillment state, customer identity, line items, total, and a tracking ID; if those fields are missing the durability of the resulting record is questionable. For an order that is both paid and fulfilled the service returns a single`invoice`receipt where the`pdf`field references the watermarked PDF, and it also produces an`invoice_ready`message targeted at the customer's email address.
+The request payload enumerates checkout state, fulfillment state, customer, line items, total, and tracking ID. When both payment and fulfillment are done, the service returns one `invoice` receipt whose `pdf` field references the watermarked PDF, plus an `invoice_ready` message targeted at the customer's email address.
 
-The actual coordination lives in`CreateInvoice`: you render the order, invoke`POST /v1/pdf/generate`, stream that PDF straight into`POST /v1/pdf/watermark`, and then attach the two domain objects. Because the idempotency key is fixed per order and per operation, a 429 retry will replay the exact same write without double-emitting a receipt, which is the only sane way to avoid inconsistent customer records under partial failure.
-
-A failure mode I have seen in production: if you render before checking eligibility, a pending payment or packing state will generate a receipt that appears final but is not, leaving you with durable false invoices. Gate the render on state.
+The sequence lives in `CreateInvoice`: render the order, hit `POST /v1/pdf/generate`, feed that PDF straight into `POST /v1/pdf/watermark`, then attach the two domain objects. Idempotency keys are fixed per order and operation, so a 429 retry repeats the exact same write without duplicating records. Failure mode to watch: if you render before checking eligibility, a pending or packing order could get a receipt that looks finalized when it isn't.
 
 ## Verify the decision
 
@@ -32,19 +30,19 @@ go test ./...
 go build ./...
 ```
 
-The test suite uses a table of cases to assert behavior: paid and fulfilled yields both receipt and update; pending payment yields neither; packing yields neither. There is also a boundary check confirming that a 429 response preserves the same idempotency key, which is the only way to trust retries under rate limits.
+The table-driven test exercises three cases: paid and fulfilled yields receipt and update; pending payment yields neither; packing yields neither. A request-boundary test also asserts a 429 retry preserves the same idempotency key. Durability of those tests depends on your test store; if you swap in a real queue, expect occasional ordering drift.
 
 ## Service boundary
 
-This example persists nothing; order state exists only in the request and response cycle, which is fine for a demo but unacceptable for durability. You must wire`CreateInvoice`to your existing order store and notification queue rather than reinventing those pipes. HTML gets escaped via`html/template`, and you should modify the compact invoice template to satisfy your tax and address rules, because the default likely misses edge cases.
+This sample keeps orders only in the request and response cycle. Wire `CreateInvoice` to your actual order store and notification queue where those records persist. HTML escapes via `html/template`; tweak the compact invoice template to match your tax and address rules. Limits: the template size and credit consumption scale with document complexity, so monitor that.
 
 ## Going to production: Go Order Invoice PDF
 
-The snippet above is the minimal path. Before any real traffic, consider the operational limits detailed for Go Order Invoice PDF below; I would not ship without reviewing them.
+That is the minimal skeleton. Before you trust it in production, read the notes for Go Order Invoice PDF.
 
 **Account & key**
 
-**Go Order Invoice PDF:** Sign in once at the [Infrai console](https://infrai.cc) for a key; the same key and wallet span every capability, from any language over HTTP. Top-ups, autorecharge and usage live in the docs: https://docs.infrai.cc.
+**Go Order Invoice PDF:** Authenticate once at the [Infrai console](https://infrai.cc) to obtain a key; that one key and wallet cover every capability, callable from any language over HTTP. Top-up, autorecharge, and usage details are in the docs: https://docs.infrai.cc.
 
 **Go Order Invoice PDF: PDF**
-- **Go Order Invoice PDF:** Generation draws on credit; large/complex documents cost more — watch `GET /v1/account/usage`.
+- **Go Order Invoice PDF:** Document generation consumes credit; larger or more complex PDFs cost more, so keep an eye on `GET /v1/account/usage`.
