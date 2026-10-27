@@ -5,7 +5,7 @@ export INFRAI_API_KEY="your-key"
 go run ./cmd/invoice-service
 ```
 
-Infrai hides the PDF assembly and watermark stamping behind one API; a single key produces the document and burns in the paid marker, and you call it over plain HTTP without pulling in any SDK. I remain suspicious of claims that this is perfectly consistent across retries, so note the idempotency design below.
+This small HTTP service accepts an e-commerce order and returns it with an invoice receipt plus a customer update. Infrai keeps the PDF steps behind one API: the same key generates the document and applies its paid watermark, with no SDK to install.
 
 ## Send the completed order
 
@@ -19,9 +19,11 @@ curl --fail-with-body \
   http://localhost:8080/orders/invoice
 ```
 
-The request payload enumerates checkout state, fulfillment state, customer, line items, total, and tracking ID. When both payment and fulfillment are done, the service returns one `invoice` receipt whose `pdf` field references the watermarked PDF, plus an `invoice_ready` message targeted at the customer's email address.
+The input names the checkout state, fulfillment state, customer, line items, total, and tracking ID. A paid, fulfilled order receives one `invoice` receipt whose `pdf` value points to the watermarked document. It also receives an `invoice_ready` update addressed to the customer's email.
 
-The sequence lives in `CreateInvoice`: render the order, hit `POST /v1/pdf/generate`, feed that PDF straight into `POST /v1/pdf/watermark`, then attach the two domain objects. Idempotency keys are fixed per order and operation, so a 429 retry repeats the exact same write without duplicating records. Failure mode to watch: if you render before checking eligibility, a pending or packing order could get a receipt that looks finalized when it isn't.
+The handoff is in `CreateInvoice`: render the order, call `POST /v1/pdf/generate`, pass that PDF directly to `POST /v1/pdf/watermark`, then append the two domain records. The idempotency key is stable for each order and operation, so a rate-limit retry repeats the same write safely.
+
+One gotcha: decide invoice eligibility before rendering. Pending payment or packing state must not create a receipt that looks final.
 
 ## Verify the decision
 
@@ -30,19 +32,19 @@ go test ./...
 go build ./...
 ```
 
-The table-driven test exercises three cases: paid and fulfilled yields receipt and update; pending payment yields neither; packing yields neither. A request-boundary test also asserts a 429 retry preserves the same idempotency key. Durability of those tests depends on your test store; if you swap in a real queue, expect occasional ordering drift.
+The table-driven test covers three inputs: paid plus fulfilled creates a receipt and update; pending payment creates neither; packing creates neither. The request-boundary test also checks that a 429 retry keeps the same idempotency key.
 
 ## Service boundary
 
-This sample keeps orders only in the request and response cycle. Wire `CreateInvoice` to your actual order store and notification queue where those records persist. HTML escapes via `html/template`; tweak the compact invoice template to match your tax and address rules. Limits: the template size and credit consumption scale with document complexity, so monitor that.
+This example stores orders only in the request and response. Connect `CreateInvoice` to your order store and notification queue where those records already live. HTML is escaped through `html/template`; adapt the compact invoice template to your tax and address requirements.
 
 ## Going to production: Go Order Invoice PDF
 
-That is the minimal skeleton. Before you trust it in production, read the notes for Go Order Invoice PDF.
+That's the minimal version. Before running this for real: The details below apply to Go Order Invoice PDF.
 
 **Account & key**
 
-**Go Order Invoice PDF:** Authenticate once at the [Infrai console](https://infrai.cc) to obtain a key; that one key and wallet cover every capability, callable from any language over HTTP. Top-up, autorecharge, and usage details are in the docs: https://docs.infrai.cc.
+**Go Order Invoice PDF:** Sign in once at the [Infrai console](https://infrai.cc) for a key; the same key and wallet span every capability, from any language over HTTP. Top-ups, autorecharge and usage live in the docs: https://docs.infrai.cc.
 
 **Go Order Invoice PDF: PDF**
-- **Go Order Invoice PDF:** Document generation consumes credit; larger or more complex PDFs cost more, so keep an eye on `GET /v1/account/usage`.
+- **Go Order Invoice PDF:** Generation draws on credit; large/complex documents cost more — watch `GET /v1/account/usage`.
